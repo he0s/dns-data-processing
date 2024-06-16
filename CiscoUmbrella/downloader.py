@@ -2,8 +2,10 @@
 
 import csv
 import json
+import logging
 import os
 import re
+import sys
 from urllib.request import urlretrieve
 import wget
 import zipfile
@@ -26,6 +28,16 @@ KAFKA_SERVER='localhost'
 KAFKA_PORT=19092
 KAFKA_TOPIC='cisco-topic'
 
+logging.basicConfig(**{
+    "level": logging.INFO,
+    "format": (
+        "[%(asctime)s] %(levelname)s %(message)s"
+    ),
+    "datefmt": "%H:%M:%S",
+    "stream": sys.stdout
+})
+
+logger = logging.getLogger(__name__)
 
 def download_file(download_date, list_name=TOP_1M_PREF, dir_name=TOP_1M_DIR):
 
@@ -89,7 +101,7 @@ def gen_data(start_date, end_date):
 
 
 def main():
-    producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT))
+    producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
 
     if not os.path.exists(os.path.join(DEST_PATH, TOP_1M_DIR)):
         os.makedirs(os.path.join(DEST_PATH, TOP_1M_DIR))
@@ -101,13 +113,14 @@ def main():
     end_date = date.today()
 
     # print(start_date, stop_date)
-    dates_list = [dd for dd in gen_data(start_date, end_date)][:5]
+    dates_list = [dd for dd in gen_data(start_date, end_date)][:15]
 
     files_list = [download_file(date) for date in dates_list]
 
     # print(files_list)
 
     for file_path, file_name, file_metadata in files_list:
+        logger.info("Processing: {}".format(file_name))
         with zipfile.ZipFile(file_path) as zf:
             # TODO: replace the file name below to a variable depending
             # on a domain list processing.
