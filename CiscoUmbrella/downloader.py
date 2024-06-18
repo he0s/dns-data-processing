@@ -7,10 +7,11 @@ import os
 import re
 import sys
 from urllib.request import urlretrieve
-import wget
+# import wget
 import zipfile
 
 from datetime import date, timedelta
+from multiprocessing import Pool, cpu_count
 
 from kafka import KafkaProducer
 
@@ -38,6 +39,9 @@ logging.basicConfig(**{
 })
 
 logger = logging.getLogger(__name__)
+
+producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
+
 
 def download_file(download_date, list_name=TOP_1M_PREF, dir_name=TOP_1M_DIR):
 
@@ -91,6 +95,7 @@ def download_file(download_date, list_name=TOP_1M_PREF, dir_name=TOP_1M_DIR):
 
     return (out_file, file_name, metadata_dict)
 
+
 # Taken from https://stackoverflow.com/a/70426202
 def gen_data(start_date, end_date):
     curr_date = start_date
@@ -100,8 +105,35 @@ def gen_data(start_date, end_date):
         curr_date += timedelta(days=1)
 
 
+def process_file(file_obj):
+
+    file_path, file_name, file_metadata = file_obj
+
+    logger.info("Processing: {}".format(file_name))
+    with zipfile.ZipFile(file_path) as zf:
+        # TODO: replace the file name below to a variable depending
+        # on a domain list processing.
+        with zf.open("{}.{}".format(TOP_1M_PREF,'csv')) as f:
+            for line in f:
+                line = line.decode('utf-8')
+
+                # print(str(line.strip()))
+                message = json.dumps(
+                    {
+                        'download_date': file_metadata['Date'],
+                        'date': re.search('([0-9]{4}-[0-9]{2}-[0-9]{2})', file_name).group(),
+                        'produce_date': file_metadata['Last-Modified'],
+                        'rank': str(line).split(',')[0],
+                        'domain': str(line.strip()).split(',')[1]
+                    }
+                ).encode('utf-8')
+
+                producer.send(KAFKA_TOPIC, b'%s' % message)
+
+
 def main():
-    producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
+    # producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
+
 
     if not os.path.exists(os.path.join(DEST_PATH, TOP_1M_DIR)):
         os.makedirs(os.path.join(DEST_PATH, TOP_1M_DIR))
@@ -113,36 +145,14 @@ def main():
     end_date = date.today()
 
     # print(start_date, stop_date)
-    dates_list = [dd for dd in gen_data(start_date, end_date)][:15]
+    dates_list = [dd for dd in gen_data(start_date, end_date)]
 
     files_list = [download_file(date) for date in dates_list]
 
     # print(files_list)
 
-    for file_path, file_name, file_metadata in files_list:
-        logger.info("Processing: {}".format(file_name))
-        with zipfile.ZipFile(file_path) as zf:
-            # TODO: replace the file name below to a variable depending
-            # on a domain list processing.
-            with zf.open("{}.{}".format(TOP_1M_PREF,'csv')) as f:
-                for line in f:
-                    line = line.decode('utf-8')
-
-                    # print(str(line.strip()))
-                    message = json.dumps(
-                        {
-                            'download_date': file_metadata['Date'],
-                            'date': re.search('([0-9]{4}-[0-9]{2}-[0-9]{2})', file_name).group(),
-                            'produce_date': file_metadata['Last-Modified'],
-                            'rank': str(line).split(',')[0],
-                            'domain': str(line.strip()).split(',')[1]
-                        }
-                    ).encode('utf-8')
-
-                    producer.send(KAFKA_TOPIC, b'%s' % message)
-    
-    # files = list(map(download_file, date_list))
-    # for dd in gen_data(start_date, end_date):
+    with Pool(cpu_count()) as pl:
+        pl.map(process_file, files_list)
 
 
 if __name__ == '__main__':
