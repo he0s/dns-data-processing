@@ -2,7 +2,7 @@ CREATE TABLE cisco_queue (
     download_date String,
     `date` Date,
     produce_date String,
-    rank UInt8,
+    rank UInt64,
     domain String
   )
 ENGINE = Kafka('redpanda-0:9092', 'cisco-topic', 'umbrella-group1', 'JSONEachRow');
@@ -12,7 +12,7 @@ CREATE TABLE cisco_data (
     download_date String,
     `date` Date,
     produce_date String,
-    rank UInt8,
+    rank UInt64,
     domain String
   )
 ENGINE ReplacingMergeTree(`date`)

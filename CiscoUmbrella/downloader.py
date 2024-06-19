@@ -40,8 +40,6 @@ logging.basicConfig(**{
 
 logger = logging.getLogger(__name__)
 
-producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
-
 
 def download_file(download_date, list_name=TOP_1M_PREF, dir_name=TOP_1M_DIR):
 
@@ -72,28 +70,41 @@ def download_file(download_date, list_name=TOP_1M_PREF, dir_name=TOP_1M_DIR):
     metadata_dict = {}
     if not os.path.exists(out_file):
         print("Downloading: %s" % down_url)
-        path, headers = urlretrieve(down_url, out_file)
+        try:
+            path, headers = urlretrieve(down_url, out_file)
 
-        if headers:
-            for name, value in headers.items():
-                metadata_dict[name] = value
+            if headers:
+                for name, value in headers.items():
+                    metadata_dict[name] = value
 
-        with open("{}.meta".format(out_file), 'w') as f:
-            json.dump(metadata_dict, f)
-        # NOTE: It was the first version of the solution,
-        # but I changed my mind since the urllib provides
-        # more interesting approach of the file downloading,
-        # that gives me some additional metadata of the file
-        # that can be used for the data analysis purposes.
-        # wget.download(down_url, out_file)
+            with open("{}.meta".format(out_file), 'w') as f:
+                json.dump(metadata_dict, f)
+            # NOTE: It was the first version of the solution,
+            # but I changed my mind since the urllib provides
+            # more interesting approach of the file downloading,
+            # that gives me some additional metadata of the file
+            # that can be used for the data analysis purposes.
+            # wget.download(down_url, out_file)
+
+            result = (out_file, file_name, metadata_dict)
+
+        except:
+            logger.error("Can't process file {}".format(
+                    down_url
+                )
+            )
+
+            result = ()
     else:
         print("Skipping, %s already exists" % out_file)
 
         with open("{}.meta".format(out_file), 'r') as f:
             metadata_dict = json.load(f)
 
+        result = (out_file, file_name, metadata_dict)
 
-    return (out_file, file_name, metadata_dict)
+
+    return result
 
 
 # Taken from https://stackoverflow.com/a/70426202
@@ -107,33 +118,38 @@ def gen_data(start_date, end_date):
 
 def process_file(file_obj):
 
-    file_path, file_name, file_metadata = file_obj
+    if file_obj:
+        producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
 
-    logger.info("Processing: {}".format(file_name))
-    with zipfile.ZipFile(file_path) as zf:
-        # TODO: replace the file name below to a variable depending
-        # on a domain list processing.
-        with zf.open("{}.{}".format(TOP_1M_PREF,'csv')) as f:
-            for line in f:
-                line = line.decode('utf-8')
+        file_path, file_name, file_metadata = file_obj
 
-                # print(str(line.strip()))
-                message = json.dumps(
-                    {
-                        'download_date': file_metadata['Date'],
-                        'date': re.search('([0-9]{4}-[0-9]{2}-[0-9]{2})', file_name).group(),
-                        'produce_date': file_metadata['Last-Modified'],
-                        'rank': str(line).split(',')[0],
-                        'domain': str(line.strip()).split(',')[1]
-                    }
-                ).encode('utf-8')
+        logger.info("Processing: {}".format(file_name))
+        with zipfile.ZipFile(file_path) as zf:
+            # TODO: replace the file name below to a variable depending
+            # on a domain list processing.
+            with zf.open("{}.{}".format(TOP_1M_PREF,'csv')) as f:
+                for line in f:
+                    line = line.decode('utf-8')
 
-                producer.send(KAFKA_TOPIC, b'%s' % message)
+                    message = json.dumps(
+                        {
+                            'download_date': file_metadata['Date'],
+                            'date': re.search('([0-9]{4}-[0-9]{2}-[0-9]{2})', file_name).group(),
+                            'produce_date': file_metadata['Last-Modified'],
+                            'rank': str(line).split(',')[0],
+                            'domain': str(line.strip()).split(',')[1]
+                        }
+                    ).encode('utf-8')
+
+                    producer.send(KAFKA_TOPIC, b'%s' % message)
+
+        logger.info("Processing finished: {}".format(file_name))
+
+    else:
+        logger.info("File object is empty, nothing to process")
 
 
 def main():
-    # producer = KafkaProducer(bootstrap_servers='{}:{}'.format(KAFKA_SERVER, KAFKA_PORT), compression_type='gzip')
-
 
     if not os.path.exists(os.path.join(DEST_PATH, TOP_1M_DIR)):
         os.makedirs(os.path.join(DEST_PATH, TOP_1M_DIR))
@@ -141,17 +157,15 @@ def main():
     if not os.path.exists(os.path.join(DEST_PATH, TOP_1M_TLD_DIR)):
         os.makedirs(os.path.join(DEST_PATH, TOP_1M_TLD_DIR))
 
-    start_date = date.fromisoformat('2017-02-08')
+    start_date = date.fromisoformat('2024-05-01')
     end_date = date.today()
 
-    # print(start_date, stop_date)
     dates_list = [dd for dd in gen_data(start_date, end_date)]
 
-    files_list = [download_file(date) for date in dates_list]
+    # files_list = [download_file(date) for date in dates_list]
 
-    # print(files_list)
-
-    with Pool(cpu_count()) as pl:
+    with Pool(int(cpu_count()/2)) as pl:
+        files_list = pl.map(download_file, dates_list)
         pl.map(process_file, files_list)
 
 
